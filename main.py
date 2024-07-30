@@ -15,9 +15,11 @@ import torch
 from pydub import AudioSegment
 from pyannote.audio import Pipeline
 import pandas as pd
+from diskcache import Cache
 
+from models import whisperx_asr
 from utils.tool import (
-    export_to_mp3,
+    export_to_wav,
     load_cfg,
     get_audio_files,
     detect_gpu,
@@ -25,11 +27,12 @@ from utils.tool import (
     calculate_audio_stats,
 )
 from utils.logger import Logger, time_logger
-from models import separate_fast, dnsmos, whisper_asr, silero_vad
+from models import separate_fast, dnsmos, silero_vad
 
 warnings.filterwarnings("ignore")
 audio_count = 0
 
+cache = Cache("cache")
 
 @time_logger
 def standardization(audio):
@@ -125,7 +128,6 @@ def source_separation(predictor, audio):
 
     return audio
 
-
 # Step 2: Speaker Diarization
 @time_logger
 def speaker_diarization(audio):
@@ -165,7 +167,7 @@ def speaker_diarization(audio):
 
 
 @time_logger
-def cut_by_speaker_label(vad_list):
+def cut_by_speaker_label(vad_list, min_length=1.5, max_length=15):
     """
     Merge and trim VAD segments by speaker labels, enforcing constraints on segment length and merge gaps.
 
@@ -175,9 +177,7 @@ def cut_by_speaker_label(vad_list):
     Returns:
         list: A list of updated VAD segments after merging and trimming.
     """
-    MERGE_GAP = 2  # merge gap in seconds, if smaller than this, merge
-    MIN_SEGMENT_LENGTH = 3  # min segment length in seconds
-    MAX_SEGMENT_LENGTH = 30  # max segment length in seconds
+    MERGE_GAP = 100  # merge gap in seconds, if smaller than this, merge
 
     updated_list = []
 
@@ -186,17 +186,17 @@ def cut_by_speaker_label(vad_list):
         last_end_time = updated_list[-1]["end"] if updated_list else None
         last_speaker = updated_list[-1]["speaker"] if updated_list else None
 
-        if vad["end"] - vad["start"] >= MAX_SEGMENT_LENGTH:
+        if vad["end"] - vad["start"] > max_length:
             current_start = vad["start"]
             segment_end = vad["end"]
             logger.warning(
-                f"cut_by_speaker_label > segment longer than 30s, force trimming to 30s smaller segments"
+                f"cut_by_speaker_label > segment longer than {max_length}s, force trimming to {max_length}s smaller segments"
             )
-            while segment_end - current_start >= MAX_SEGMENT_LENGTH:
-                vad["end"] = current_start + MAX_SEGMENT_LENGTH  # update end time
+            while segment_end - current_start >= max_length:
+                vad["end"] = current_start + max_length  # update end time
                 updated_list.append(vad)
                 vad = vad.copy()
-                current_start += MAX_SEGMENT_LENGTH
+                current_start += max_length
                 vad["start"] = current_start  # update start time
                 vad["end"] = segment_end
             updated_list.append(vad)
@@ -205,25 +205,28 @@ def cut_by_speaker_label(vad_list):
         if (
             last_speaker is None
             or last_speaker != vad["speaker"]
-            or vad["end"] - vad["start"] >= MIN_SEGMENT_LENGTH
+            or vad["end"] - vad["start"] >= min_length
         ):
             updated_list.append(vad)
             continue
 
         if (
             vad["start"] - last_end_time >= MERGE_GAP
-            or vad["end"] - last_start_time >= MAX_SEGMENT_LENGTH
+            or vad["end"] - last_start_time >= max_length
         ):
             updated_list.append(vad)
+            continue
         else:
             updated_list[-1]["end"] = vad["end"]  # merge the time
+            continue
+        pass
 
     logger.debug(
         f"cut_by_speaker_label > merged {len(vad_list) - len(updated_list)} segments"
     )
 
     filter_list = [
-        vad for vad in updated_list if vad["end"] - vad["start"] >= MIN_SEGMENT_LENGTH
+        vad for vad in updated_list if vad["end"] - vad["start"] >= min_length
     ]
 
     logger.debug(
@@ -232,107 +235,16 @@ def cut_by_speaker_label(vad_list):
 
     return filter_list
 
-
 @time_logger
-def asr(vad_segments, audio):
-    """
-    Perform Automatic Speech Recognition (ASR) on the VAD segments of the given audio.
-
-    Args:
-        vad_segments (list): List of VAD segments with start and end times.
-        audio (dict): A dictionary containing the audio waveform and sample rate.
-
-    Returns:
-        list: A list of ASR results with transcriptions and language details.
-    """
-    if len(vad_segments) == 0:
-        return []
-
-    temp_audio = audio["waveform"]
-    start_time = vad_segments[0]["start"]
-    end_time = vad_segments[-1]["end"]
-    start_frame = int(start_time * audio["sample_rate"])
-    end_frame = int(end_time * audio["sample_rate"])
-    temp_audio = temp_audio[start_frame:end_frame]  # remove silent start and end
-
-    # update vad_segments start and end time (this is a little trick for batched asr:)
-    for idx, segment in enumerate(vad_segments):
-        vad_segments[idx]["start"] -= start_time
-        vad_segments[idx]["end"] -= start_time
-
+def asr(audio):
     # resample to 16k
     temp_audio = librosa.resample(
-        temp_audio, orig_sr=audio["sample_rate"], target_sr=16000
+        audio["waveform"], orig_sr=audio["sample_rate"], target_sr=16000
     )
-
-    if multilingual_flag:
-        logger.debug("Multilingual flag is on")
-        valid_vad_segments, valid_vad_segments_language = [], []
-        # get valid segments to be transcripted
-        for idx, segment in enumerate(vad_segments):
-            start_frame = int(segment["start"] * 16000)
-            end_frame = int(segment["end"] * 16000)
-            segment_audio = temp_audio[start_frame:end_frame]
-            language, prob = asr_model.detect_language(segment_audio)
-            # 1. if language is in supported list, 2. if prob > 0.8
-            if language in supported_languages and prob > 0.8:
-                valid_vad_segments.append(vad_segments[idx])
-                valid_vad_segments_language.append(language)
-
-        # if no valid segment, return empty
-        if len(valid_vad_segments) == 0:
-            return []
-        all_transcribe_result = []
-        logger.debug(f"valid_vad_segments_language: {valid_vad_segments_language}")
-        unique_languages = list(set(valid_vad_segments_language))
-        logger.debug(f"unique_languages: {unique_languages}")
-        # process each language one by one
-        for language_token in unique_languages:
-            language = language_token
-            # filter out segments with different language
-            vad_segments = [
-                valid_vad_segments[i]
-                for i, x in enumerate(valid_vad_segments_language)
-                if x == language
-            ]
-            # bacthed trascription
-            transcribe_result_temp = asr_model.transcribe(
-                temp_audio,
-                vad_segments,
-                batch_size=batch_size,
-                language=language,
-                print_progress=True,
-            )
-            result = transcribe_result_temp["segments"]
-            # restore the segment annotation
-            for idx, segment in enumerate(result):
-                result[idx]["start"] += start_time
-                result[idx]["end"] += start_time
-                result[idx]["language"] = transcribe_result_temp["language"]
-            all_transcribe_result.extend(result)
-        # sort by start time
-        all_transcribe_result = sorted(all_transcribe_result, key=lambda x: x["start"])
-        return all_transcribe_result
-    else:
-        logger.debug("Multilingual flag is off")
-        language, prob = asr_model.detect_language(temp_audio)
-        if language in supported_languages and prob > 0.8:
-            transcribe_result = asr_model.transcribe(
-                temp_audio,
-                vad_segments,
-                batch_size=batch_size,
-                language=language,
-                print_progress=True,
-            )
-            result = transcribe_result["segments"]
-            for idx, segment in enumerate(result):
-                result[idx]["start"] += start_time
-                result[idx]["end"] += start_time
-                result[idx]["language"] = transcribe_result["language"]
-            return result
-        else:
-            return []
-
+    whisperx_asr_model.load_asr_model()
+    results = whisperx_asr_model.transcribe_and_align(temp_audio)
+    whisperx_asr_model.unload_asr_model()
+    return results
 
 @time_logger
 def mos_prediction(audio, vad_list):
@@ -355,7 +267,8 @@ def mos_prediction(audio, vad_list):
 
     for index, vad in enumerate(tqdm.tqdm(vad_list, desc="DNSMOS")):
         start, end = int(vad["start"] * sample_rate), int(vad["end"] * sample_rate)
-        segment = audio[start:end]
+
+        segment = np.concatenate([np.zeros(int(.2 * sample_rate)), audio[start:end], np.zeros(int(.2 * sample_rate))])
 
         dnsmos = dnsmos_compute_score(segment, sample_rate, False)["OVRL"]
 
@@ -378,7 +291,7 @@ def filter(mos_list):
     Returns:
         list: A list of VAD segments with MOS scores above the average MOS.
     """
-    filtered_audio_stats, all_audio_stats = calculate_audio_stats(mos_list)
+    filtered_audio_stats, all_audio_stats = calculate_audio_stats(mos_list, min_dnsmos=0)
     filtered_segment = len(filtered_audio_stats)
     all_segment = len(all_audio_stats)
     logger.debug(
@@ -387,8 +300,8 @@ def filter(mos_list):
     filtered_list = [mos_list[idx] for idx, _ in filtered_audio_stats]
     return filtered_list
 
-
-def main_process(audio_path, save_path=None, audio_name=None):
+@time_logger
+def main_process(audio_path, save_path=None, audio_name=None, min_length=1.5, max_length=15):
     """
     Process the audio file, including standardization, source separation, speaker segmentation, VAD, ASR, export to MP3, and MOS prediction.
 
@@ -416,39 +329,63 @@ def main_process(audio_path, save_path=None, audio_name=None):
     logger.info(
         "Step 0: Preprocess all audio files --> 24k sample rate + wave format + loudnorm + bit depth 16"
     )
-    audio = standardization(audio_path)
+    st_audio = standardization(audio_path)
 
     logger.info("Step 1: Source Separation")
-    audio = source_separation(separate_predictor1, audio)
+    if debug:
+        audio = cache.get(f"separation:{audio_path}", None)
+        if audio is None:
+            audio = source_separation(separate_predictor1, st_audio)
+            cache.set(f"separation:{audio_path}", audio)
+    else:
+        audio = source_separation(separate_predictor1, st_audio)
+    del(st_audio)
 
     logger.info("Step 2: Speaker Diarization")
-    speakerdia = speaker_diarization(audio)
+    if debug:
+        speakerdia = cache.get(f"diarization:{audio_path}", None)
+        if speakerdia is None:
+            speakerdia = speaker_diarization(audio)
+            cache.set(f"diarization:{audio_path}", speakerdia)
+    else:
+        speakerdia = speaker_diarization(audio)
 
-    logger.info("Step 3: Fine-grained Segmentation by VAD")
-    vad_list = vad.vad(speakerdia, audio)
-    segment_list = cut_by_speaker_label(vad_list)  # post process after vad
+    logger.info("Step 3: ASR")
+    if debug:
+        asrx_result = cache.get(f"asrx_result:{audio_path}", None)
+        if asrx_result is None:
+            asrx_result = asr(audio)
+            cache.set(f"asrx_result:{audio_path}", asrx_result)
+    else:
+        asrx_result = asr(audio)
 
-    logger.info("Step 4: ASR")
-    asr_result = asr(segment_list, audio)
+    logger.info("Step 4: Fine-grained Segmentation by VAD")
+    vad_list = vad.vad(speakerdia, asrx_result, audio)
+
+    segment_list = cut_by_speaker_label(vad_list, min_length=min_length, max_length=max_length)  # post process after vad
+
+    # asr_model.load_asr_model()
+    # asr_result = asr(segment_list, audio)
+    # asr_model.unload_asr_model()
 
     logger.info("Step 5: Filter")
     logger.info("Step 5.1: calculate mos_prediction")
-    avg_mos, mos_list = mos_prediction(audio, asr_result)
+    avg_mos, mos_list = mos_prediction(audio, segment_list)
 
     logger.info(f"Step 5.1: done, average MOS: {avg_mos}")
 
     logger.info("Step 5.2: Filter out files with less than average MOS")
     filtered_list = filter(mos_list)
 
-    logger.info("Step 6: write result into MP3 and JSON file")
-    export_to_mp3(audio, filtered_list, save_path, audio_name)
+    logger.info("Step 6: write result into WAV and JSON file")
+    export_to_wav(audio, mos_list, save_path, audio_name)
 
     final_path = os.path.join(save_path, audio_name + ".json")
     with open(final_path, "w") as f:
-        json.dump(filtered_list, f, ensure_ascii=False)
+        json.dump(mos_list, f, ensure_ascii=False)
 
     logger.info(f"All done, Saved to: {final_path}")
-    return final_path, filtered_list
+    return final_path, mos_list
 
 
 if __name__ == "__main__":
@@ -472,7 +409,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--whisper_arch",
         type=str,
-        default="medium",
+        default="large",
         help="The name of the Whisper model to load.",
     )
     parser.add_argument(
@@ -482,13 +419,25 @@ if __name__ == "__main__":
         help="The number of CPU threads to use per worker, e.g. will be multiplied by num workers.",
     )
     parser.add_argument(
+        "--max_duration",
+        type=float,
+        default=8,
+        help="Max duration of generated audio segment in seconds.",
+    )
+    parser.add_argument(
+        "--min_duration",
+        type=float,
+        default=1.2,
+        help="Min duration of generated audio segment in seconds.",
+    )
+    parser.add_argument(
         "--exit_pipeline",
         type=bool,
         default=False,
         help="Exit pipeline when task done.",
     )
     args = parser.parse_args()
-
+    debug = True
     batch_size = args.batch_size
     cfg = load_cfg(args.config_path)
 
@@ -526,11 +475,12 @@ if __name__ == "__main__":
     )
     dia_pipeline.to(device)
 
-    # ASR
-    logger.debug(" * Loading ASR Model")
-    asr_model = whisper_asr.load_asr_model(
-        args.whisper_arch,
-        device_name,
+    # ASRX
+    logger.debug(" * Loading ASRX Model")
+    whisperx_asr_model = whisperx_asr.WhisperXModel(
+        "large-v3",
+        language="en",
+        device=device_name,
         compute_type=args.compute_type,
         threads=args.threads,
         asr_options={
@@ -540,7 +490,7 @@ if __name__ == "__main__":
 
     # VAD
     logger.debug(" * Loading VAD Model")
-    vad = silero_vad.SileroVAD(device=device)
+    vad = silero_vad.SileroVAD(device=device, min_duration=args.min_duration, max_duration=args.max_duration)
 
     # Background Noise Separation
     logger.debug(" * Loading Background Noise Model")
