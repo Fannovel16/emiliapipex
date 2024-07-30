@@ -268,7 +268,7 @@ def mos_prediction(audio, vad_list):
     for index, vad in enumerate(tqdm.tqdm(vad_list, desc="DNSMOS")):
         start, end = int(vad["start"] * sample_rate), int(vad["end"] * sample_rate)
 
-        segment = np.concatenate([np.zeros(int(.2 * sample_rate)), audio[start:end], np.zeros(int(.2 * sample_rate))])
+        segment = audio[start:end]
 
         dnsmos = dnsmos_compute_score(segment, sample_rate, False)["OVRL"]
 
@@ -281,7 +281,7 @@ def mos_prediction(audio, vad_list):
     return predict_dnsmos, vad_list
 
 
-def filter(mos_list):
+def filter(mos_list, min_duration=1.5, max_duration=15):
     """
     Filter out the segments with MOS scores, wrong char duration, and total duration.
 
@@ -291,7 +291,7 @@ def filter(mos_list):
     Returns:
         list: A list of VAD segments with MOS scores above the average MOS.
     """
-    filtered_audio_stats, all_audio_stats = calculate_audio_stats(mos_list, min_dnsmos=0)
+    filtered_audio_stats, all_audio_stats = calculate_audio_stats(mos_list,min_duration=min_duration, max_duration=max_duration, min_dnsmos=2.0)
     filtered_segment = len(filtered_audio_stats)
     all_segment = len(all_audio_stats)
     logger.debug(
@@ -375,17 +375,17 @@ def main_process(audio_path, save_path=None, audio_name=None, min_length=1.5, ma
     logger.info(f"Step 5.1: done, average MOS: {avg_mos}")
 
     logger.info("Step 5.2: Filter out files with less than average MOS")
-    filtered_list = filter(mos_list)
+    filtered_list = filter(mos_list, min_duration=min_length, max_duration=max_length)
 
     logger.info("Step 6: write result into WAV and JSON file")
-    export_to_wav(audio, mos_list, save_path, audio_name)
+    export_to_wav(audio, filtered_list, save_path, audio_name, 0.0)
 
     final_path = os.path.join(save_path, audio_name + ".json")
     with open(final_path, "w") as f:
-        json.dump(mos_list, f, ensure_ascii=False)
+        json.dump(filtered_list, f, ensure_ascii=False)
 
     logger.info(f"All done, Saved to: {final_path}")
-    return final_path, mos_list
+    return final_path, filtered_list
 
 
 if __name__ == "__main__":
@@ -421,7 +421,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_duration",
         type=float,
-        default=8,
+        default=15,
         help="Max duration of generated audio segment in seconds.",
     )
     parser.add_argument(
@@ -437,7 +437,9 @@ if __name__ == "__main__":
         help="Exit pipeline when task done.",
     )
     args = parser.parse_args()
+    # Set debug mode for caching expensive operations
     debug = True
+
     batch_size = args.batch_size
     cfg = load_cfg(args.config_path)
 

@@ -224,7 +224,7 @@ def export_to_mp3(audio, asr_result, folder_path, file_name):
 
 
 @time_logger
-def export_to_wav(audio, asr_result, folder_path, file_name):
+def export_to_wav(audio, asr_result, folder_path, file_name, silence_duration: float = 0.2):
     """Export segmented audio to WAV files."""
     sr = audio["sample_rate"]
     audio = audio["waveform"]
@@ -233,12 +233,12 @@ def export_to_wav(audio, asr_result, folder_path, file_name):
 
     for idx, segment in enumerate(tqdm.tqdm(asr_result, desc="Exporting to WAV")):
         start, end = int(segment["start"] * sr), int(segment["end"] * sr)
-        split_audio = audio[start:end]
+        silence = np.zeros(int(silence_duration * sr))
+        split_audio = np.concatenate([silence, audio[start:end], silence])
         split_audio = librosa.to_mono(split_audio)
         out_file = f"{file_name}_{idx}.wav"
         out_path = os.path.join(folder_path, out_file)
         write_wav(out_path, sr, split_audio)
-
 
 def get_char_count(text):
     """
@@ -272,6 +272,7 @@ def calculate_audio_stats(
     Returns:
         valid_audio_stats: A list containing tuples of audio ID and their duration.
     """
+    logger = Logger.get_logger()
     all_audio_stats = []
     valid_audio_stats = []
     avg_durations = []
@@ -285,9 +286,10 @@ def calculate_audio_stats(
             avg_durations.append(duration / char_count)
 
     # calculate the bounds for the average character duration
+    percentile = 5
     if len(avg_durations) > 0:
-        q1 = np.percentile(avg_durations, 25)
-        q3 = np.percentile(avg_durations, 75)
+        q1 = np.percentile(avg_durations, percentile)
+        q3 = np.percentile(avg_durations, 100-percentile)
         iqr = q3 - q1
         lower_bound = q1 - 1.5 * iqr
         upper_bound = q3 + 1.5 * iqr
@@ -319,5 +321,8 @@ def calculate_audio_stats(
             )  # average character duration within bounds
         ):
             valid_audio_stats.append((idx, duration))
+        else:
+            logger.debug(f"Filtered audio: idx={idx}, duration={duration}, dnsmos={dnsmos}, char_count={char_count}, avg_char_duration={avg_char_duration}, text={entry['text']}")
+            continue
 
     return valid_audio_stats, all_audio_stats
