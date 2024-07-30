@@ -438,7 +438,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     # Set debug mode for caching expensive operations
-    debug = True
+    debug = False
 
     batch_size = args.batch_size
     cfg = load_cfg(args.config_path)
