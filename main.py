@@ -34,6 +34,7 @@ audio_count = 0
 
 cache = Cache("cache")
 
+
 @time_logger
 def standardization(audio):
     """
@@ -68,7 +69,8 @@ def standardization(audio):
     logger.debug("Entering the preprocessing of audio")
 
     # Convert the audio file to WAV format
-    audio = audio.set_frame_rate(cfg["entrypoint"]["SAMPLE_RATE"])
+    sample_rate = cfg["entrypoint"]["SAMPLE_RATE"]
+    audio = audio.set_frame_rate(sample_rate)
     audio = audio.set_sample_width(2)  # Set bit depth to 16bit
     audio = audio.set_channels(1)  # Set to mono
 
@@ -127,6 +129,7 @@ def source_separation(predictor, audio):
     audio["waveform"] = vocals[:, 0]  # vocals is stereo, only use one channel
 
     return audio
+
 
 # Step 2: Speaker Diarization
 @time_logger
@@ -235,6 +238,7 @@ def cut_by_speaker_label(vad_list, min_length=1.5, max_length=15):
 
     return filter_list
 
+
 @time_logger
 def asr(audio):
     # resample to 16k
@@ -245,6 +249,7 @@ def asr(audio):
     results = whisperx_asr_model.transcribe_and_align(temp_audio)
     whisperx_asr_model.unload_asr_model()
     return results
+
 
 @time_logger
 def mos_prediction(audio, vad_list):
@@ -291,7 +296,9 @@ def filter(mos_list, min_duration=1.5, max_duration=15):
     Returns:
         list: A list of VAD segments with MOS scores above the average MOS.
     """
-    filtered_audio_stats, all_audio_stats = calculate_audio_stats(mos_list,min_duration=min_duration, max_duration=max_duration, min_dnsmos=2.0)
+    filtered_audio_stats, all_audio_stats = calculate_audio_stats(
+        mos_list, min_duration=min_duration, max_duration=max_duration, min_dnsmos=2.0
+    )
     filtered_segment = len(filtered_audio_stats)
     all_segment = len(all_audio_stats)
     logger.debug(
@@ -300,8 +307,11 @@ def filter(mos_list, min_duration=1.5, max_duration=15):
     filtered_list = [mos_list[idx] for idx, _ in filtered_audio_stats]
     return filtered_list
 
+
 @time_logger
-def main_process(audio_path, save_path=None, audio_name=None, min_length=1.5, max_length=15):
+def main_process(
+    audio_path, save_path=None, audio_name=None, min_length=1.5, max_length=15
+):
     """
     Process the audio file, including standardization, source separation, speaker segmentation, VAD, ASR, export to MP3, and MOS prediction.
 
@@ -331,15 +341,19 @@ def main_process(audio_path, save_path=None, audio_name=None, min_length=1.5, ma
     )
     st_audio = standardization(audio_path)
 
-    logger.info("Step 1: Source Separation")
-    if debug:
-        audio = cache.get(f"separation:{audio_path}", None)
-        if audio is None:
+    if args.separate_speech:
+        logger.info("Step 1: Source Separation")
+        if debug:
+            audio = cache.get(f"separation:{audio_path}", None)
+            if audio is None:
+                audio = source_separation(separate_predictor1, st_audio)
+                cache.set(f"separation:{audio_path}", audio)
+        else:
             audio = source_separation(separate_predictor1, st_audio)
-            cache.set(f"separation:{audio_path}", audio)
     else:
-        audio = source_separation(separate_predictor1, st_audio)
-    del(st_audio)
+        logger.info("Step 1: Skipping Source Separation")
+        audio = st_audio
+        del st_audio
 
     logger.info("Step 2: Speaker Diarization")
     if debug:
@@ -362,7 +376,9 @@ def main_process(audio_path, save_path=None, audio_name=None, min_length=1.5, ma
     logger.info("Step 4: Fine-grained Segmentation by VAD")
     vad_list = vad.vad(speakerdia, asrx_result, audio)
 
-    segment_list = cut_by_speaker_label(vad_list, min_length=min_length, max_length=max_length)  # post process after vad
+    segment_list = cut_by_speaker_label(
+        vad_list, min_length=min_length, max_length=max_length
+    )  # post process after vad
 
     # asr_model.load_asr_model()
     # asr_result = asr(segment_list, audio)
@@ -378,7 +394,7 @@ def main_process(audio_path, save_path=None, audio_name=None, min_length=1.5, ma
     filtered_list = filter(mos_list, min_duration=min_length, max_duration=max_length)
 
     logger.info("Step 6: write result into WAV and JSON file")
-    export_to_wav(audio, filtered_list, save_path, audio_name, 0.0)
+    export_to_wav(audio, filtered_list, save_path, audio_name, 0.15)
 
     final_path = os.path.join(save_path, audio_name + ".json")
     with open(final_path, "w") as f:
@@ -428,6 +444,12 @@ if __name__ == "__main__":
         "--min_duration",
         type=float,
         default=1.2,
+        help="Min duration of generated audio segment in seconds.",
+    )
+    parser.add_argument(
+        "--separate_speech",
+        type=bool,
+        default=True,
         help="Min duration of generated audio segment in seconds.",
     )
     parser.add_argument(
@@ -492,13 +514,18 @@ if __name__ == "__main__":
 
     # VAD
     logger.debug(" * Loading VAD Model")
-    vad = silero_vad.SileroVAD(device=device, min_duration=args.min_duration, max_duration=args.max_duration)
-
-    # Background Noise Separation
-    logger.debug(" * Loading Background Noise Model")
-    separate_predictor1 = separate_fast.Predictor(
-        args=cfg["separate"]["step1"], device=device_name
+    vad = silero_vad.SileroVAD(
+        device=device, min_duration=args.min_duration, max_duration=args.max_duration
     )
+
+    if args.separate_speech:
+        # Background Noise Separation
+        logger.debug(" * Loading Background Noise Model")
+        separate_predictor1 = separate_fast.Predictor(
+            args=cfg["separate"]["step1"], device=device_name
+        )
+    else:
+        logger.debug(" * Skipping Background Noise Separation")
 
     # DNSMOS Scoring
     logger.debug(" * Loading DNSMOS Model")

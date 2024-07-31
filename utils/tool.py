@@ -224,7 +224,9 @@ def export_to_mp3(audio, asr_result, folder_path, file_name):
 
 
 @time_logger
-def export_to_wav(audio, asr_result, folder_path, file_name, silence_duration: float = 0.2):
+def export_to_wav(
+    audio, asr_result, folder_path, file_name, silence_duration: float = 0.2
+):
     """Export segmented audio to WAV files."""
     sr = audio["sample_rate"]
     audio = audio["waveform"]
@@ -239,6 +241,7 @@ def export_to_wav(audio, asr_result, folder_path, file_name, silence_duration: f
         out_file = f"{file_name}_{idx}.wav"
         out_path = os.path.join(folder_path, out_file)
         write_wav(out_path, sr, split_audio)
+
 
 def get_char_count(text):
     """
@@ -289,7 +292,7 @@ def calculate_audio_stats(
     percentile = 5
     if len(avg_durations) > 0:
         q1 = np.percentile(avg_durations, percentile)
-        q3 = np.percentile(avg_durations, 100-percentile)
+        q3 = np.percentile(avg_durations, 100 - percentile)
         iqr = q3 - q1
         lower_bound = q1 - 1.5 * iqr
         upper_bound = q3 + 1.5 * iqr
@@ -322,7 +325,9 @@ def calculate_audio_stats(
         ):
             valid_audio_stats.append((idx, duration))
         else:
-            logger.debug(f"Filtered audio: idx={idx}, duration={duration}, dnsmos={dnsmos}, char_count={char_count}, avg_char_duration={avg_char_duration}, text={entry['text']}")
+            logger.debug(
+                f"Filtered audio: idx={idx}, duration={duration}, dnsmos={dnsmos}, char_count={char_count}, avg_char_duration={avg_char_duration}, text={entry['text']}"
+            )
             continue
 
     return valid_audio_stats, all_audio_stats

@@ -59,7 +59,6 @@ class WhisperXModel:
         else:
             self.asr_options = asr_options
 
-
     def transcribe_and_align(self, audio: np.ndarray):
         result = self.model.transcribe(audio=audio, batch_size=self.batch_size)
         return whisperx.align(
@@ -71,9 +70,7 @@ class WhisperXModel:
             return_char_alignments=False,
         )
 
-    def load_asr_model(
-        self
-    ):
+    def load_asr_model(self):
         modelx = whisperx.load_model(
             self.whisper_arch,
             device=self.device,
@@ -81,7 +78,9 @@ class WhisperXModel:
             language=self.language,
             asr_options=self.asr_options,
         )
-        model_a, metadata = whisperx.load_align_model(language_code=self.language, device=self.device)
+        model_a, metadata = whisperx.load_align_model(
+            language_code=self.language, device=self.device
+        )
         self.model_a = model_a
         self.model = modelx
         self.metadata = metadata

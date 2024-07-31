@@ -12,12 +12,20 @@ import numpy as np
 
 SAMPLING_RATE = 16000
 
+
 class SileroVAD:
     """
     Voice Activity Detection (VAD) using Silero-VAD.
     """
 
-    def __init__(self, local=False, model="silero_vad", device=torch.device("cpu"), min_duration=1.5, max_duration=15):
+    def __init__(
+        self,
+        local=False,
+        model="silero_vad",
+        device=torch.device("cpu"),
+        min_duration=1.5,
+        max_duration=15,
+    ):
         """
         Initialize the VAD object.
 
@@ -48,7 +56,9 @@ class SileroVAD:
         except Exception as e:
             raise RuntimeError(f"Failed to load VAD model: {e}")
 
-    def segment_speech(self, audio_segment, start_time, end_time, sampling_rate, max_duration=15):
+    def segment_speech(
+        self, audio_segment, start_time, end_time, sampling_rate, max_duration=15
+    ):
         """
         Segment speech from an audio segment and return a list of timestamps.
 
@@ -92,10 +102,7 @@ class SileroVAD:
             segment_end_time = adjusted_timestamps[end_index][1]
             segment_duration = segment_end_time - segment_start_time
 
-            if (
-                start_index == end_index
-                or segment_duration < max_duration_frames
-            ):
+            if start_index == end_index or segment_duration < max_duration_frames:
                 segments.append([start_index, end_index])
             else:
                 if not intervals[start_index:end_index]:
@@ -119,7 +126,9 @@ class SileroVAD:
             if segment_duration > max_duration_frames:
                 current_start = segment_start_time
                 while current_start < segment_end_time:
-                    current_end = min(current_start + max_duration_frames, segment_end_time)
+                    current_end = min(
+                        current_start + max_duration_frames, segment_end_time
+                    )
                     final_segments.append((current_start, current_end))
                     current_start = current_end
             else:
@@ -156,7 +165,9 @@ class SileroVAD:
             text = segment["text"].strip()
             words = segment["words"]
             # Join text if it ends with a comma or
-            if text.strip().endswith(",") or (text.strip()[-1] and text.strip()[-1].isalnum()):
+            if text.strip().endswith(",") or (
+                text.strip()[-1] and text.strip()[-1].isalnum()
+            ):
                 last_start = float(segment["start"])
                 last_text.append(text.strip())
                 last_words.extend(segment["words"])
@@ -178,15 +189,15 @@ class SileroVAD:
             temp_dia_index = dia_index
             dia_index_start = 0
             while temp_dia_index < len(speakerdia):
-                if temp_dia_index == 0:
-                    previous_dia = 100000
+                if temp_dia_index <= 0:
+                    previous_dia = 100000000
                 else:
                     previous_dia = abs(
                         speakerdia.loc[temp_dia_index - 1, "start"] - x_start
                     )
                 current_dia = abs(speakerdia.loc[temp_dia_index, "start"] - x_start)
-                if temp_dia_index == len(speakerdia) - 1:
-                    next_dia = 100000
+                if temp_dia_index >= len(speakerdia) - 1:
+                    next_dia = 100000000
                 else:
                     next_dia = abs(
                         speakerdia.loc[temp_dia_index + 1, "start"] - x_start
@@ -199,16 +210,39 @@ class SileroVAD:
             dia_index_end = 0
             while temp_dia_index < len(speakerdia):
                 if temp_dia_index == 0:
-                    previous_dia = 100000
+                    previous_dia = 100000000
                 else:
                     previous_dia = abs(
                         speakerdia.loc[temp_dia_index - 1, "end"] - x_end
                     )
                 current_dia = abs(speakerdia.loc[temp_dia_index, "end"] - x_end)
                 if temp_dia_index == len(speakerdia) - 1:
-                    next_dia = 100000
+                    next_dia = 1000000000
                 else:
-                    next_dia = abs(speakerdia.loc[temp_dia_index + 1, "end"] - x_end)
+                    # make sure the next segments ends are not overlapping
+                    if (
+                        speakerdia.loc[temp_dia_index + 1, "end"]
+                        < speakerdia.loc[temp_dia_index, "end"]
+                    ):
+                        index_offset = 2
+                        while temp_dia_index + index_offset <= len(speakerdia):
+                            if (
+                                speakerdia.loc[temp_dia_index + index_offset, "end"]
+                                > speakerdia.loc[temp_dia_index, "end"]
+                            ):
+                                break
+                            index_offset += 1
+                        if temp_dia_index + index_offset >= len(speakerdia):
+                            next_dia = 1000000000
+                        else:
+                            next_dia = abs(
+                                speakerdia.loc[temp_dia_index + index_offset, "end"]
+                                - x_end
+                            )
+                    else:
+                        next_dia = abs(
+                            speakerdia.loc[temp_dia_index + 1, "end"] - x_end
+                        )
                 if previous_dia >= current_dia <= next_dia:
                     dia_index_end = temp_dia_index
                     break
@@ -228,9 +262,13 @@ class SileroVAD:
             if index == len(whisperx_results.get("segments")) - 1:
                 right_boundary = len(audio_data) / sampling_rate
             else:
-                right_boundary = float(whisperx_results.get("segments")[index + 1]["start"])
+                right_boundary = float(
+                    whisperx_results.get("segments")[index + 1]["start"]
+                )
 
-            alt_start, alt_end = self.more_vad(audio_data, sampling_rate, left_boundary,start ,end,right_boundary)
+            alt_start, alt_end = self.more_vad(
+                audio_data, sampling_rate, left_boundary, start, end, right_boundary
+            )
 
             if end - start <= self.max_duration:
                 out.append(
@@ -250,12 +288,33 @@ class SileroVAD:
                 count_id += 1
                 continue
 
-            count_id, temp_out = self.segment_sample(audio_data, count_id, end, sampling_rate, speakers, start, text,
-                                                     x_end, x_start, words, previous_end=left_boundary, next_start=right_boundary)
+            count_id, temp_out = self.segment_sample(
+                audio_data,
+                count_id,
+                end,
+                sampling_rate,
+                speakers,
+                start,
+                text,
+                x_end,
+                x_start,
+                words,
+                previous_end=left_boundary,
+                next_start=right_boundary,
+            )
             out.extend(temp_out)
         return out
 
-    def more_vad(self, audio_data, sampling_rate, left_boundary, start, end, right_boundary, window=.25):
+    def more_vad(
+        self,
+        audio_data,
+        sampling_rate,
+        left_boundary,
+        start,
+        end,
+        right_boundary,
+        window=0.25,
+    ):
         (
             left_start,
             right_start,
@@ -270,20 +329,70 @@ class SileroVAD:
             start,
             end,
             right_boundary,
-            window=window
+            window=window,
         )
 
         # get dB for each possible start and end
-        start_db = self.calculate_db(audio_segment=audio_data,sample_rate=sampling_rate, timestamp_s=left_start, window_size_s=.03)
-        end_db = self.calculate_db(audio_segment=audio_data,sample_rate=sampling_rate, timestamp_s=right_end, window_size_s=.03)
-        alt_start_db = self.calculate_db(audio_segment=audio_data,sample_rate=sampling_rate, timestamp_s=left_start_2, window_size_s=.03)
-        alt_end_db = self.calculate_db(audio_segment=audio_data,sample_rate=sampling_rate, timestamp_s=right_end_2, window_size_s=.03)
-        og_start_db = self.calculate_db(audio_segment=audio_data,sample_rate=sampling_rate, timestamp_s=start, window_size_s=.03)
-        og_end_db = self.calculate_db(audio_segment=audio_data,sample_rate=sampling_rate, timestamp_s=end, window_size_s=.03)
-        reverse_start_db = self.calculate_db(audio_segment=audio_data,sample_rate=sampling_rate, timestamp_s=right_start, window_size_s=.03)
-        reverse_end_db = self.calculate_db(audio_segment=audio_data,sample_rate=sampling_rate, timestamp_s=left_end, window_size_s=.03)
-        start_options = [(start, og_start_db), (left_start, start_db), (right_start, reverse_start_db), (left_start_2,alt_start_db)]
-        end_options = [(end, og_end_db), (right_end, end_db), (left_end, reverse_end_db), (right_end_2,alt_end_db)]
+        start_db = self.calculate_db(
+            audio_segment=audio_data,
+            sample_rate=sampling_rate,
+            timestamp_s=left_start,
+            window_size_s=0.03,
+        )
+        end_db = self.calculate_db(
+            audio_segment=audio_data,
+            sample_rate=sampling_rate,
+            timestamp_s=right_end,
+            window_size_s=0.03,
+        )
+        alt_start_db = self.calculate_db(
+            audio_segment=audio_data,
+            sample_rate=sampling_rate,
+            timestamp_s=left_start_2,
+            window_size_s=0.03,
+        )
+        alt_end_db = self.calculate_db(
+            audio_segment=audio_data,
+            sample_rate=sampling_rate,
+            timestamp_s=right_end_2,
+            window_size_s=0.03,
+        )
+        og_start_db = self.calculate_db(
+            audio_segment=audio_data,
+            sample_rate=sampling_rate,
+            timestamp_s=start,
+            window_size_s=0.03,
+        )
+        og_end_db = self.calculate_db(
+            audio_segment=audio_data,
+            sample_rate=sampling_rate,
+            timestamp_s=end,
+            window_size_s=0.03,
+        )
+        reverse_start_db = self.calculate_db(
+            audio_segment=audio_data,
+            sample_rate=sampling_rate,
+            timestamp_s=right_start,
+            window_size_s=0.03,
+        )
+        reverse_end_db = self.calculate_db(
+            audio_segment=audio_data,
+            sample_rate=sampling_rate,
+            timestamp_s=left_end,
+            window_size_s=0.03,
+        )
+        start_options = [
+            (start, og_start_db),
+            (left_start, start_db),
+            (right_start, reverse_start_db),
+            (left_start_2, alt_start_db),
+        ]
+        end_options = [
+            (end, og_end_db),
+            (right_end, end_db),
+            (left_end, reverse_end_db),
+            (right_end_2, alt_end_db),
+        ]
 
         # sort by db
         start_options.sort(key=lambda x: x[1])
@@ -292,7 +401,21 @@ class SileroVAD:
         # return the lowest dB start and end
         return start_options[0][0], end_options[0][0]
 
-    def segment_sample(self, audio_data, count_id, end, sampling_rate, speakers, start, text, x_end, x_start, words, previous_end, next_start):
+    def segment_sample(
+        self,
+        audio_data,
+        count_id,
+        end,
+        sampling_rate,
+        speakers,
+        start,
+        text,
+        x_end,
+        x_start,
+        words,
+        previous_end,
+        next_start,
+    ):
         """
         Split a segment that is too long into smaller segments based on vad.
         """
@@ -305,11 +428,11 @@ class SileroVAD:
             temp_audio, orig_sr=sampling_rate, target_sr=SAMPLING_RATE
         )
         frames = self.segment_speech(
-                temp_audio_resampled,
-                int(start * SAMPLING_RATE),
-                int(end * SAMPLING_RATE),
-                SAMPLING_RATE,
-                max_duration=self.max_duration
+            temp_audio_resampled,
+            int(start * SAMPLING_RATE),
+            int(end * SAMPLING_RATE),
+            SAMPLING_RATE,
+            max_duration=self.max_duration,
         )
         for index, frame in enumerate(frames):
             start_frame_sub = frame[0]
@@ -332,7 +455,12 @@ class SileroVAD:
                 if abs(end_time - word["end"]) < end_best:
                     end_best = abs(end_time - word["end"])
                     end_candidate = word_index
-            text = " ".join([word.get("word", "") for word in words[start_candidate:end_candidate + 1]])
+            text = " ".join(
+                [
+                    word.get("word", "")
+                    for word in words[start_candidate : end_candidate + 1]
+                ]
+            )
 
             if len(temp_out) == 0:
                 left_boundary = previous_end
@@ -343,7 +471,15 @@ class SileroVAD:
             else:
                 right_boundary = frames[index + 1][0] / SAMPLING_RATE
 
-            alt_start, alt_end = self.more_vad(audio_data=audio_data, sampling_rate=sampling_rate, left_boundary=left_boundary, start=start_time, end=end_time,  right_boundary=right_boundary, window=.5)
+            alt_start, alt_end = self.more_vad(
+                audio_data=audio_data,
+                sampling_rate=sampling_rate,
+                left_boundary=left_boundary,
+                start=start_time,
+                end=end_time,
+                right_boundary=right_boundary,
+                window=0.5,
+            )
 
             temp_out.append(
                 {
@@ -362,8 +498,15 @@ class SileroVAD:
             count_id += 1
         return count_id, temp_out
 
-    def calculate_local_minimums_within_bounds(self,
-        audio_segment, sampling_rate, left_boundary, start, end, right_boundary, window=.5
+    def calculate_local_minimums_within_bounds(
+        self,
+        audio_segment,
+        sampling_rate,
+        left_boundary,
+        start,
+        end,
+        right_boundary,
+        window=0.5,
     ) -> tuple[float, ...]:
         left_window = min(start - left_boundary, window)
         right_window = min(right_boundary - end, window)
@@ -380,17 +523,17 @@ class SileroVAD:
         left_start_2 = self.find_local_minimum(
             audio_segment=audio_segment,
             sampling_rate=sampling_rate,
-            given_time_s=max(left_boundary+.001,left_start-.001),
+            given_time_s=max(left_boundary + 0.001, left_start - 0.001),
             window=left_window,
             direction="left",
             smoothing_window_size=3,
-            include_current=False
+            include_current=False,
         )
         right_start = self.find_local_minimum(
             audio_segment=audio_segment,
             sampling_rate=sampling_rate,
             given_time_s=start,
-            window=min(window, end - start - .001),
+            window=min(window, end - start - 0.001),
             direction="right",
             smoothing_window_size=3,
         )
@@ -398,7 +541,7 @@ class SileroVAD:
             audio_segment=audio_segment,
             sampling_rate=sampling_rate,
             given_time_s=end,
-            window=min(window, end - start - .001),
+            window=min(window, end - start - 0.001),
             direction="left",
             smoothing_window_size=3,
         )
@@ -413,17 +556,27 @@ class SileroVAD:
         right_end_2 = self.find_local_minimum(
             audio_segment=audio_segment,
             sampling_rate=sampling_rate,
-            given_time_s=min(right_end+.001,right_boundary-.001),
+            given_time_s=min(right_end + 0.001, right_boundary - 0.001),
             window=right_window,
             direction="right",
             smoothing_window_size=3,
-            include_current=False
+            include_current=False,
         )
-        return tuple([left_start, right_start, left_end, right_end, left_start_2, right_end_2])
+        return tuple(
+            [left_start, right_start, left_end, right_end, left_start_2, right_end_2]
+        )
 
     @staticmethod
-    def find_local_minimum(*, audio_segment, sampling_rate, given_time_s, window, direction="right", smoothing_window_size=3, include_current=True
-                           ) -> float:
+    def find_local_minimum(
+        *,
+        audio_segment,
+        sampling_rate,
+        given_time_s,
+        window,
+        direction="right",
+        smoothing_window_size=3,
+        include_current=True,
+    ) -> float:
         """
         Finds the time of a local minimum RMS energy around a given time point in an audio segment.
 
@@ -441,7 +594,7 @@ class SileroVAD:
         window_frame = int(window * sampling_rate)
         # Extract the audio segment based on the direction
         if direction == "right":
-            segment_to_analyze = audio_segment[given_frame: given_frame + window_frame]
+            segment_to_analyze = audio_segment[given_frame : given_frame + window_frame]
         elif direction == "left":
             segment_to_analyze = audio_segment[
                 max(0, given_frame - window_frame) : given_frame
@@ -462,17 +615,25 @@ class SileroVAD:
 
         # Apply a moving average to smooth the RMS energy
         smoothed_rms = np.convolve(
-            rms_energy, np.ones(smoothing_window_size) / smoothing_window_size, mode="valid"
+            rms_energy,
+            np.ones(smoothing_window_size) / smoothing_window_size,
+            mode="valid",
         )
 
         # Find the index of the local minimum in the smoothed RMS energy
         local_min_index = None
         if direction == "right":
-            if len(smoothed_rms) > 2 and include_current and smoothed_rms[0] < smoothed_rms[1] and smoothed_rms[0] < smoothed_rms[2]:
+            if (
+                len(smoothed_rms) > 2
+                and include_current
+                and smoothed_rms[0] < smoothed_rms[1]
+                and smoothed_rms[0] < smoothed_rms[2]
+            ):
                 local_min_index = 0
             else:
                 for i in range(1, len(smoothed_rms) - 1):
-                    if (smoothed_rms[i] < smoothed_rms[i - 1]
+                    if (
+                        smoothed_rms[i] < smoothed_rms[i - 1]
                         and smoothed_rms[i] < smoothed_rms[i + 1]
                     ) or smoothed_rms[i] == 0:
                         local_min_index = i
@@ -514,10 +675,11 @@ class SileroVAD:
         return local_min_time_s
 
     @staticmethod
-    def calculate_db(*, audio_segment, sample_rate, timestamp_s, window_size_s=.03):
-
+    def calculate_db(*, audio_segment, sample_rate, timestamp_s, window_size_s=0.03):
         # Calculate start and end times in seconds
-        start_s = max(0, timestamp_s - window_size_s / 2)  # Ensure start_ms is not negative
+        start_s = max(
+            0, timestamp_s - window_size_s / 2
+        )  # Ensure start_ms is not negative
         end_s = timestamp_s + window_size_s / 2
 
         start_frame = int(start_s * sample_rate)
@@ -528,12 +690,12 @@ class SileroVAD:
 
         # Convert to numpy array for dB calculation
         # samples = np.array(extracted_segment.get_array_of_samples())
-        rms_amplitude = np.sqrt(np.mean(extracted_segment.astype(float)**2))
+        rms_amplitude = np.sqrt(np.mean(extracted_segment.astype(float) ** 2))
 
         # Determine the reference amplitude based on the bit depth
         # hardcoding 16-bit depth since we are normalizing the audio to 16-bit
         bit_depth = 16
-        reference_amplitude = 2**(bit_depth - 1)
+        reference_amplitude = 2 ** (bit_depth - 1)
 
         # Calculate dB level
         return 20 * np.log10(rms_amplitude / reference_amplitude)
