@@ -1,7 +1,11 @@
+import pathlib
+
+import librosa
 import numpy as np
 import whisperx
 from typing import List, Union, Optional, NamedTuple
 import torch
+from tqdm import tqdm
 
 
 class WhisperXModel:
@@ -69,6 +73,17 @@ class WhisperXModel:
             self.device,
             return_char_alignments=False,
         )
+
+    def transcribe_directory(self, audio_dir: str):
+        # enumerate files in audio_dir
+        # for each file, load audio, transcribe without alignment
+        # return list of transcriptions
+        results = dict()
+        for audio_file in tqdm(pathlib.Path(audio_dir).rglob("*.wav")):
+            tmp_audio = whisperx.load_audio(str(audio_file))
+            result = self.model.transcribe(audio=tmp_audio, batch_size=1)
+            results[str(audio_file)] = result
+        return results
 
     def load_asr_model(self):
         modelx = whisperx.load_model(

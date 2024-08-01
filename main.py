@@ -252,6 +252,14 @@ def asr(audio):
 
 
 @time_logger
+def batch_asr_dir(audio_dir):
+    whisperx_asr_model.load_asr_model()
+    results = whisperx_asr_model.transcribe_directory(audio_dir)
+    whisperx_asr_model.unload_asr_model()
+    return results
+
+
+@time_logger
 def mos_prediction(audio, vad_list):
     """
     Predict the Mean Opinion Score (MOS) for the given audio and VAD segments.
@@ -269,7 +277,8 @@ def mos_prediction(audio, vad_list):
     audio = librosa.resample(
         audio, orig_sr=cfg["entrypoint"]["SAMPLE_RATE"], target_sr=sample_rate
     )
-
+    # Load the DNSMOS model
+    dnsmos_compute_score.load_model()
     for index, vad in enumerate(tqdm.tqdm(vad_list, desc="DNSMOS")):
         start, end = int(vad["start"] * sample_rate), int(vad["end"] * sample_rate)
 
@@ -278,7 +287,7 @@ def mos_prediction(audio, vad_list):
         dnsmos = dnsmos_compute_score(segment, sample_rate, False)["OVRL"]
 
         vad_list[index]["dnsmos"] = dnsmos
-
+    dnsmos_compute_score.unload_model()
     predict_dnsmos = np.mean([vad["dnsmos"] for vad in vad_list])
 
     logger.debug(f"avg predict_dnsmos for whole audio: {predict_dnsmos}")
@@ -346,10 +355,14 @@ def main_process(
         if debug:
             audio = cache.get(f"separation:{audio_path}", None)
             if audio is None:
+                separate_predictor1.load_model()
                 audio = source_separation(separate_predictor1, st_audio)
+                separate_predictor1.unload_model()
                 cache.set(f"separation:{audio_path}", audio)
         else:
+            separate_predictor1.load_model()
             audio = source_separation(separate_predictor1, st_audio)
+            separate_predictor1.unload_model()
     else:
         logger.info("Step 1: Skipping Source Separation")
         audio = st_audio
@@ -396,9 +409,32 @@ def main_process(
     logger.info("Step 6: write result into WAV and JSON file")
     export_to_wav(audio, filtered_list, save_path, audio_name, 0.15)
 
+    results_directory = batch_asr_dir(save_path)
+
+    for segment in filtered_list:
+        if segment.get("path", "NONE") in results_directory:
+            segment["original_text"] = segment["text"]
+            segment["text"] = (
+                results_directory.get(segment.get("path", "NONE"), {})
+                .get("segments", [{}])[0]
+                .get("text", "")
+                .strip()
+            )
+        else:
+            logger.warning(f"ASR result not found for {segment.get('path', 'NONE')}")
+
     final_path = os.path.join(save_path, audio_name + ".json")
     with open(final_path, "w") as f:
         json.dump(filtered_list, f, ensure_ascii=False)
+
+    metadata = os.path.join(save_path, "metadata.csv")
+    with open(metadata, "w") as f:
+        f.writelines(
+            [
+                f"{segment.get('path','ERROR')}|{segment.get('text','ERROR')}|{'-'.join(segment.get('speaker',['ERROR']))}"
+                for segment in filtered_list
+            ]
+        )
 
     logger.info(f"All done, Saved to: {final_path}")
     return final_path, filtered_list
@@ -511,7 +547,6 @@ if __name__ == "__main__":
             "initial_prompt": "Um, Uh, Ah. Like, you know. I mean, right. Actually. Basically, and right? okay. Alright. Emm. So. Oh. 生于忧患,死于安乐。岂不快哉?当然,嗯,呃,就,这样,那个,哪个,啊,呀,哎呀,哎哟,唉哇,啧,唷,哟,噫!微斯人,吾谁与归?ええと、あの、ま、そう、ええ。äh, hm, so, tja, halt, eigentlich. euh, quoi, bah, ben, tu vois, tu sais, t'sais, eh bien, du coup. genre, comme, style. 응,어,그,음."
         },
     )
-
     # VAD
     logger.debug(" * Loading VAD Model")
     vad = silero_vad.SileroVAD(

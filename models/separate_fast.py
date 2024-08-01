@@ -126,24 +126,35 @@ class Predictor:
             ValueError: If the provided device is not 'cuda' or 'cpu'.
         """
         self.args = args
+        self.device = device
+        self.model_ = None
+        self.model = None
+
+    def load_model(self):
         self.model_ = ConvTDFNet(
             target_name="vocals",
             L=11,
-            dim_f=args["dim_f"],
-            dim_t=args["dim_t"],
-            n_fft=args["n_fft"],
+            dim_f=self.args["dim_f"],
+            dim_t=self.args["dim_t"],
+            n_fft=self.args["n_fft"],
         )
 
-        if device == "cuda":
+        if self.device == "cuda":
             self.model = ort.InferenceSession(
-                args["model_path"], providers=["CUDAExecutionProvider"]
+                self.args["model_path"], providers=["CUDAExecutionProvider"]
             )
-        elif device == "cpu":
+        elif self.device == "cpu":
             self.model = ort.InferenceSession(
-                args["model_path"], providers=["CPUExecutionProvider"]
+                self.args["model_path"], providers=["CPUExecutionProvider"]
             )
         else:
             raise ValueError("Device must be either 'cuda' or 'cpu'")
+
+    def unload_model(self):
+        del self.model
+        self.model = None
+        del self.model_
+        self.model_ = None
 
     def demix(self, mix):
         """

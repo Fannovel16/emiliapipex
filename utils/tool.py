@@ -234,12 +234,14 @@ def export_to_wav(
     os.makedirs(folder_path, exist_ok=True)
 
     for idx, segment in enumerate(tqdm.tqdm(asr_result, desc="Exporting to WAV")):
+        segment["idx"] = idx
         start, end = int(segment["start"] * sr), int(segment["end"] * sr)
         silence = np.zeros(int(silence_duration * sr))
         split_audio = np.concatenate([silence, audio[start:end], silence])
         split_audio = librosa.to_mono(split_audio)
         out_file = f"{file_name}_{idx}.wav"
         out_path = os.path.join(folder_path, out_file)
+        segment["path"] = out_path
         write_wav(out_path, sr, split_audio)
 
 
