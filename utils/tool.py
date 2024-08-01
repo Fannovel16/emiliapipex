@@ -240,6 +240,7 @@ def export_to_wav(
         split_audio = np.concatenate([silence, audio[start:end], silence])
         split_audio = librosa.to_mono(split_audio)
         out_file = f"{file_name}_{idx}.wav"
+        segment["file_name"] = out_file
         out_path = os.path.join(folder_path, out_file)
         segment["path"] = out_path
         write_wav(out_path, sr, split_audio)

@@ -431,7 +431,7 @@ def main_process(
     with open(metadata, "w") as f:
         f.writelines(
             [
-                f"{segment.get('path','ERROR')}|{segment.get('text','ERROR')}|{'-'.join(segment.get('speaker',['ERROR']))}"
+                f"{segment.get('file_name','ERROR')}|{segment.get('text','ERROR')}|{'-'.join(segment.get('speaker',['ERROR']))}\n"
                 for segment in filtered_list
             ]
         )
