@@ -79,7 +79,7 @@ class WhisperXModel:
         # for each file, load audio, transcribe without alignment
         # return list of transcriptions
         results = dict()
-        for audio_file in tqdm(pathlib.Path(audio_dir).rglob("*.wav")):
+        for audio_file in tqdm(list(pathlib.Path(audio_dir).rglob("*.wav")), desc="Transcribing segments"):
             tmp_audio = whisperx.load_audio(str(audio_file))
             result = self.model.transcribe(audio=tmp_audio, batch_size=1)
             results[str(audio_file)] = result
