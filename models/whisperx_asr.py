@@ -6,7 +6,7 @@ import whisperx
 from typing import List, Union, Optional, NamedTuple
 import torch
 from tqdm import tqdm
-
+import os
 
 class WhisperXModel:
     """
@@ -70,7 +70,7 @@ class WhisperXModel:
             self.model_a,
             self.metadata,
             audio,
-            self.device,
+            self.device+':0',
             return_char_alignments=False,
         )
 
@@ -94,7 +94,7 @@ class WhisperXModel:
             asr_options=self.asr_options,
         )
         model_a, metadata = whisperx.load_align_model(
-            language_code=self.language, device=self.device
+            language_code=self.language, device=self.device+':0'
         )
         self.model_a = model_a
         self.model = modelx

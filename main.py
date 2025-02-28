@@ -17,7 +17,7 @@ from pyannote.audio import Pipeline
 import pandas as pd
 from diskcache import Cache
 
-from models import whisperx_asr
+from models import whisperx_asr, chunkformer_asr
 from utils.tool import (
     export_to_wav,
     load_cfg,
@@ -133,7 +133,7 @@ def source_separation(predictor, audio):
 
 # Step 2: Speaker Diarization
 @time_logger
-def speaker_diarization(audio):
+def speaker_diarization(audio, num_speakers=None):
     """
     Perform speaker diarization on the given audio.
 
@@ -154,7 +154,8 @@ def speaker_diarization(audio):
             "waveform": waveform,
             "sample_rate": audio["sample_rate"],
             "channel": 0,
-        }
+        },
+        num_speakers=num_speakers
     )
 
     diarize_df = pd.DataFrame(
@@ -245,17 +246,17 @@ def asr(audio):
     temp_audio = librosa.resample(
         audio["waveform"], orig_sr=audio["sample_rate"], target_sr=16000
     )
-    whisperx_asr_model.load_asr_model()
-    results = whisperx_asr_model.transcribe_and_align(temp_audio)
-    whisperx_asr_model.unload_asr_model()
+    #asr_model.load_asr_model()
+    results = asr_model.transcribe_and_align(temp_audio)
+    #asr_model.unload_asr_model()
     return results
 
 
 @time_logger
 def batch_asr_dir(audio_dir):
-    whisperx_asr_model.load_asr_model()
-    results = whisperx_asr_model.transcribe_directory(audio_dir)
-    whisperx_asr_model.unload_asr_model()
+    #asr_model.load_asr_model()
+    results = asr_model.transcribe_directory(audio_dir)
+    #asr_model.unload_asr_model()
     return results
 
 
@@ -319,7 +320,7 @@ def filter(mos_list, min_duration=1.5, max_duration=15):
 
 @time_logger
 def main_process(
-    audio_path, save_path=None, audio_name=None, min_length=1.5, max_length=15
+    audio_path, save_path=None, audio_name=None, min_length=1.5, max_length=15, num_speakers=None
 ):
     """
     Process the audio file, including standardization, source separation, speaker segmentation, VAD, ASR, export to MP3, and MOS prediction.
@@ -372,10 +373,10 @@ def main_process(
     if debug:
         speakerdia = cache.get(f"diarization:{audio_path}", None)
         if speakerdia is None:
-            speakerdia = speaker_diarization(audio)
+            speakerdia = speaker_diarization(audio, num_speakers)
             cache.set(f"diarization:{audio_path}", speakerdia)
     else:
-        speakerdia = speaker_diarization(audio)
+        speakerdia = speaker_diarization(audio, num_speakers)
 
     logger.info("Step 3: ASR")
     if debug:
@@ -465,6 +466,12 @@ if __name__ == "__main__":
         help="The name of the Whisper model to load.",
     )
     parser.add_argument(
+        "--chunkformer_path",
+        type="str",
+        default="/content/chunkformer-large-vie",
+        help="The checkpoint path of ChunkFormer"
+    )
+    parser.add_argument(
         "--threads",
         type=int,
         default=4,
@@ -494,6 +501,24 @@ if __name__ == "__main__":
         default=False,
         help="Exit pipeline when task done.",
     )
+    parser.add_argument(
+        "--num_speakers",
+        type=int,
+        default=None,
+        help="The number of speakers in the dataset, set to 0 to skip speech diarization",
+    )
+    parser.add_argument(
+        "--total_batch_duration",
+        type=int,
+        default=1800,
+        help="The duration of a continious slice batch from audio feeding to ChunkFormer. Higher means better parallelism but also uses more VRAM",
+    )
+    parser.add_argument(
+        "--ctc_max_silence",
+        type=int,
+        default=10,
+        help="Max frames of silece (80ms each) before splitting."
+    )
     args = parser.parse_args()
     # Set debug mode for caching expensive operations
     debug = False
@@ -513,7 +538,7 @@ if __name__ == "__main__":
     if detect_gpu():
         logger.info("Using GPU")
         device_name = "cuda"
-        device = torch.device(device_name)
+        device = torch.device(device_name+':0')
     else:
         logger.info("Using CPU")
         device_name = "cpu"
@@ -537,15 +562,22 @@ if __name__ == "__main__":
 
     # ASRX
     logger.debug(" * Loading ASRX Model")
-    whisperx_asr_model = whisperx_asr.WhisperXModel(
-        "large-v3",
-        language="en",
-        device=device_name,
+    """asr_model = whisperx_asr.WhisperXModel(
+        args.whisper_arch,
+        language="vi",
+        device="cuda",
         compute_type=args.compute_type,
         threads=args.threads,
-        asr_options={
-            "initial_prompt": "Um, Uh, Ah. Like, you know. I mean, right. Actually. Basically, and right? okay. Alright. Emm. So. Oh. 生于忧患,死于安乐。岂不快哉?当然,嗯,呃,就,这样,那个,哪个,啊,呀,哎呀,哎哟,唉哇,啧,唷,哟,噫!微斯人,吾谁与归?ええと、あの、ま、そう、ええ。äh, hm, so, tja, halt, eigentlich. euh, quoi, bah, ben, tu vois, tu sais, t'sais, eh bien, du coup. genre, comme, style. 응,어,그,음."
-        },
+        #asr_options={
+        #    "initial_prompt": "Um, Uh, Ah. Like, you know. I mean, right. Actually. Basically, and right? okay. Alright. Emm. So. Oh. 生于忧患,死于安乐。岂不快哉?当然,嗯,呃,就,这样,那个,哪个,啊,呀,哎呀,哎哟,唉哇,啧,唷,哟,噫!微斯人,吾谁与归?ええと、あの、ま、そう、ええ。äh, hm, so, tja, halt, eigentlich. euh, quoi, bah, ben, tu vois, tu sais, t'sais, eh bien, du coup. genre, comme, style. 응,어,그,음."
+        #},
+    )
+    asr_model.load_asr_model()"""
+    asr_model = chunkformer_asr.ChunkFormerModel(
+        args.chunkformer_path,
+        device=device,
+        total_batch_duration=args.total_batch_duration,
+        max_silence=args.ctc_max_silence
     )
     # VAD
     logger.debug(" * Loading VAD Model")
@@ -582,4 +614,4 @@ if __name__ == "__main__":
     logger.debug(f"Scanning {len(audio_paths)} audio files in {input_folder_path}")
 
     for path in audio_paths:
-        main_process(path)
+        main_process(path, num_speakers=args.num_speakers)
